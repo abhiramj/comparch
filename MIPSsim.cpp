@@ -16,6 +16,8 @@
 #include<string>
 #include<map>
 #include<iomanip>
+#include<queue>
+#include<deque>
 // definitions
 enum OpCode{
     // category -1
@@ -29,13 +31,93 @@ using namespace std;
 // Instruction holds the instruction as a set
 class Instruction{
     public:
+        Instruction(){
+            rd =0;
+            rt =0;
+            rs =0;
+            immediate = 0;
+            stringFormat = "";
+            instructionAddress = 0;
+        }
         OpCode opcode;
         int rd;
         int rt;
         int rs;   // works as sa for SLL, SRL
         int immediate; // works as offset for Jumps and Branches
         string stringFormat;
+        int instructionAddress;
+        int GetWriteOperands();
+        bool Empty();
+        vector<int > GetReadOperands();
 };
+bool Instruction::Empty(){
+    if (instructionAddress == 0){
+        return true;
+    }
+    return false;
+}
+vector<int > Instruction::GetReadOperands(){
+    vector<int > operands;
+    switch(opcode){
+        case AND:
+        case ADD:
+        case SUB:
+        case MUL:
+        case OR:
+        case XOR:
+        case SLT:
+        case SLL:
+        case SRA:
+        case SRL:
+            operands.push_back(rs);
+            operands.push_back(rt);
+        case ADDI:
+        case ANDI:
+        case ORI:
+        case XORI:
+        case JR:
+        case LW:
+        case SW:
+            operands.push_back(rs);
+            break;
+        default:
+            cout<<"No operands to read for "<<stringFormat<<endl;
+            break;
+    }
+    return operands;
+}
+int Instruction::GetWriteOperands(){
+    switch(opcode){
+        case AND:
+        case ADD:
+        case SUB:
+        case MUL:
+        case OR:
+        case XOR:
+        case SLT:
+        case SLL:
+        case SRA:
+        case SRL:
+            return rd;
+            break;
+        case ADDI:
+        case ANDI:
+        case ORI:
+        case XORI:
+        case LW:
+            return rt;
+        default:
+            cout<<"No operands to write for "<<stringFormat<<endl;
+            break;
+    }
+    return -1;
+
+}
+int GetWriteOperands(Instruction currentInstruction);
+queue<int > GetReadOperands(Instruction currentInstruction);
+bool isWARHazard(Instruction currentInstruction);
+bool isWAWHazard(Instruction currentInstruction);
+bool isRAWHazard(Instruction currentInstruction);
 class Disassembler{
     public:
         int memstart;
@@ -46,10 +128,10 @@ class Disassembler{
 
         vector <Instruction > instructionSet;
         Disassembler(int startMemory = 256):disassembly("disassembly.txt"), simulation("simulation.txt")
-        {
-            memstart = startMemory;
-            PC = 256;
-        };
+    {
+        memstart = startMemory;
+        PC = 256;
+    };
         ~Disassembler(){
             if (disassembly.is_open()){
                 disassembly.close();
@@ -58,7 +140,7 @@ class Disassembler{
                 simulation.close();
             }
         };
-        void ParseInstruction(string, bool &);
+        void ParseInstruction(string, bool &, int);
         void ParseRegRegOperands(string , int &, int &, int &);
         void ParseShiftOperands(string instruction, int &, int &, int &);
         void ParseRegMemOperands(string, int &, int &, int &);
@@ -119,18 +201,17 @@ int Disassembler::GetValueFromStr(string input, bool isSigned = true, bool isShi
     }
     int parseVal = 0;
     for (int i =0; i < numBits; i++){
-        int currVal  = *(bitVal) -'0';
+        int currVal  = bitVal[i] -'0';
         currVal = currVal*pow(2,numBits-(i+1));
         if (i==0 && isSigned){
             currVal *= -1;
         }
         parseVal += currVal;
-        bitVal++;
     }
     return parseVal;
 }
 
-void Disassembler::ParseInstruction(string instruction, bool &isEndInstruction){
+void Disassembler::ParseInstruction(string instruction, bool &isEndInstruction, int instructionAddress){
     string opcodeField = instruction.substr(0,6);
     ostringstream ss;
 
@@ -282,10 +363,12 @@ void Disassembler::ParseInstruction(string instruction, bool &isEndInstruction){
                 break;
             case BREAK:
                 ss<<endl;
+                break;
 
         }
         // store the instruction
         currInstruction.stringFormat = ss.str();
+        currInstruction.instructionAddress = instructionAddress;
         disassembly<<ss.str();
         instructionSet.push_back(currInstruction);
 
@@ -358,7 +441,7 @@ void Disassembler::DoANDIInstruction(Instruction instruction){
 }
 
 void Disassembler::DoANDInstruction(Instruction instruction){
-    registers[instruction.rd] = registers[instruction.rs] | registers[instruction.rt];
+    registers[instruction.rd] = registers[instruction.rs] & registers[instruction.rt];
     AdvancePC();
 }
 
@@ -436,13 +519,13 @@ void Disassembler::DoSLLInstruction(Instruction instruction){
 }
 
 void Disassembler::DoSRLInstruction(Instruction instruction){
-    registers[instruction.rd] = ((unsigned int) registers[instruction.rt])>>instruction.rs;
+    registers[instruction.rd] = ((unsigned int) registers[instruction.rt])>> (unsigned int)instruction.rs;
     AdvancePC();
 
 }
 
 void Disassembler::DoSRAInstruction(Instruction instruction){
-    registers[instruction.rd] = ((unsigned int ) registers[instruction.rt])>>instruction.rs;
+    registers[instruction.rd] = (registers[instruction.rt])>> (unsigned int)instruction.rs;
     AdvancePC();
 }
 
@@ -511,12 +594,327 @@ static void PrintData(){
     for (int i=0; i < (disassembler.memend-disassembler.memstart)/32 ; i++){
         disassembler.simulation<<currMem<<":";
         for (int j = 0 ; j< 8 ; j++){
-            disassembler.simulation<<"\t"<<memory[currMem + j*4];
+            if (memory.find(currMem +j*4) == memory.end()){
+                disassembler.simulation<<"\t"<<0;
+            }
+            else disassembler.simulation<<"\t"<<memory[currMem + j*4];
         }
         disassembler.simulation<<endl;
         currMem += 32;
     }
 }
+
+
+
+
+
+/***** Assignment 2 starts here *****/
+vector<int > regReadMap(32,0);
+vector<int > regWriteMap(32,0);
+class IssueUnit{
+    public:
+        IssueUnit(){
+            indexIssued =0;
+            loadStoreIssued =0;
+            nonLoadStoreIssued =0;
+            firstStore = NULL;
+        }
+        deque<Instruction> preIssueBuffer;
+        int indexIssued;
+        int loadStoreIssued;
+        int nonLoadStoreIssued;
+        Instruction* firstStore;
+        vector<Instruction> preALU1;
+        vector<Instruction> preALU2;
+        bool IsFullQ(vector<Instruction> );
+        bool IsEmptyQ(vector<Instruction> );
+        bool IsFullBuffer();
+        bool IsEmptyBuffer();
+        void DoIssue();
+        void CheckAndIssue(bool , deque<Instruction>::iterator &);
+        void DoIssueInstruction(Instruction);
+
+};
+
+class IFDecodeUnit{
+    public:
+        IFDecodeUnit(IssueUnit &issueUnit):issueUnit(issueUnit), instIterator(disassembler.instructionSet.begin()){
+            isStallLastCycle = false;
+            isEndExecution = false;
+            indexFetched = 0;
+        }
+        vector<Instruction>::iterator instIterator;
+        bool isStallLastCycle;
+        bool isEndExecution;
+        deque<Instruction> iFDecodeQ;
+        int indexFetched;
+        IssueUnit &issueUnit;
+        bool IFDecodeQFull();
+        bool IFDecodeQEmpty();
+        void PutInIssueUnit(Instruction );
+        void DoIFDecode();
+        void DoIFDecodeInstruction();
+        void PrintStatus();
+
+
+};
+
+bool IFDecodeUnit::IFDecodeQFull(){
+    assert(iFDecodeQ.size() <= 2);
+    if (iFDecodeQ.size() == 2){
+        return true;
+    }
+    return false;
+}
+bool IFDecodeUnit::IFDecodeQEmpty(){
+    assert(iFDecodeQ.size() <= 2);
+    if (iFDecodeQ.size() == 0){
+        return true;
+    }
+    return false;
+}
+
+void IFDecodeUnit::PutInIssueUnit(Instruction currInstruction){
+    issueUnit.preIssueBuffer.push_back(currInstruction);
+    cout<<"pushed "<<currInstruction.stringFormat<<endl;
+    assert(issueUnit.preIssueBuffer.size() <= 4);
+}
+void IFDecodeUnit::DoIFDecode(){
+    do{
+        if (!isStallLastCycle){
+            DoIFDecodeInstruction(); // stall gets updated here
+        }
+        else isStallLastCycle = false;
+        indexFetched++;
+    }while (indexFetched < 2);
+}
+void IFDecodeUnit::DoIFDecodeInstruction(){
+    // Not stalled, inst can exec
+    if (!issueUnit.IsFullBuffer() ){
+        bool isNOP = false;
+        bool isReadableBranchInst = true;
+        bool isBranch = false;
+        Instruction currentInstruction = *(instIterator);
+        cout<<currentInstruction.stringFormat<<endl;
+        ++instIterator;
+        switch (currentInstruction.opcode){
+            // check write cases for all the branch instuctions
+            case BEQ:
+                isBranch = true;
+                if (regWriteMap[currentInstruction.rs] != 0 || regWriteMap[currentInstruction.rt] != 0){
+                    isReadableBranchInst = false;
+                }
+                break;
+            case BLTZ:
+            case BGTZ:
+            case JR:
+                isBranch = true;
+                if (regWriteMap[currentInstruction.rs] != 0 ){
+                    isReadableBranchInst = false;
+                }
+                break;
+            case NOP:
+                isNOP = true;
+                break;
+            case BREAK:
+                isEndExecution = true;
+                break;
+        }
+        if (!isReadableBranchInst){
+            isStallLastCycle = true;
+            iFDecodeQ.push_back(currentInstruction);
+            indexFetched =2; // endind execution here and not fetching next inst
+        }
+        else if (!isNOP && !isEndExecution && !isBranch){
+            PutInIssueUnit(currentInstruction);
+        }
+
+    }
+
+}
+void IFDecodeUnit::PrintStatus(){
+
+}
+
+bool IssueUnit::IsFullQ(vector<Instruction> q){
+    assert(q.size()  <= 2);
+    if (q.size() == 2){
+        return true;
+    }
+    return false;
+}
+bool IssueUnit::IsEmptyQ(vector<Instruction> q){
+    assert(q.size()  <= 2);
+    if (q.size() == 0){
+        return true;
+    }
+    return false;
+
+}
+bool IssueUnit::IsFullBuffer(){
+    assert(preIssueBuffer.size()  <= 4);
+    if (preIssueBuffer.size() == 4){
+        return true;
+    }
+    return false;
+}
+bool IssueUnit::IsEmptyBuffer(){
+    assert(preIssueBuffer.size()  <= 4);
+    if (preIssueBuffer.size() == 0){
+        return true;
+    }
+    return false;
+}
+
+void IssueUnit::DoIssue(){
+    firstStore = NULL;
+    indexIssued = 0;
+    loadStoreIssued = 0;
+    nonLoadStoreIssued =0;
+    deque<Instruction>::iterator preIssueIterator= preIssueBuffer.begin();
+    
+    while (indexIssued < 2 && preIssueIterator != preIssueBuffer.end()){
+        Instruction currentInstruction = *(preIssueIterator);
+        // check hazards here
+        switch (currentInstruction.opcode){
+            case SW:
+                // store the first store instruction
+                if (firstStore == NULL){
+                    firstStore = &currentInstruction;
+                }
+            case LW:
+                CheckAndIssue(true, preIssueIterator);
+                break;
+            default:
+                CheckAndIssue(false, preIssueIterator);
+        }
+    }
+
+
+}
+void IssueUnit::DoIssueInstruction(Instruction currentInstruction){
+    cout<<"Issued "<<currentInstruction.stringFormat<<endl;
+    getchar();
+    vector<int > readOperands = currentInstruction.GetReadOperands();
+    int writeOperands = currentInstruction.GetWriteOperands();
+    if (writeOperands != -1){
+        int currentAddress = currentInstruction.instructionAddress;
+        if (currentAddress > regWriteMap[writeOperands]){
+            regWriteMap[writeOperands] = currentAddress;
+        }
+    }
+    for (int i=0 ; i< readOperands.size(); i++){
+        if (readOperands[i] != -1){
+            int currentAddress = currentInstruction.instructionAddress;
+            if (currentAddress > regReadMap[readOperands[i]]){
+                regReadMap[readOperands[i]] = currentAddress;
+            }
+        }
+    }
+    readOperands.clear();
+
+    switch (currentInstruction.opcode){
+        case LW:
+        case SW:
+            preALU1.push_back(currentInstruction);
+            break;
+        default:
+            preALU2.push_back(currentInstruction);
+    }
+    indexIssued++;
+}
+
+
+// This is the ScoreBoard Executor
+void ScoreBoardExecution(){
+    IssueUnit issueUnit;
+    IFDecodeUnit iFDecodeUnit(issueUnit);
+    int cycle =1;
+    while (!iFDecodeUnit.isEndExecution){
+        issueUnit.DoIssue();
+        iFDecodeUnit.DoIFDecode();
+        PrintHeader();
+        iFDecodeUnit.PrintStatus();
+        issueUnit.PrintStatus();
+        getchar();
+        cycle++;
+    }
+}
+void IssueUnit::CheckAndIssue(bool isLoadStore, deque<Instruction>::iterator &preIssueIterator){
+    Instruction currentInstruction = *(preIssueIterator);
+    cout<<"Got inst   "<<currentInstruction.stringFormat<<endl;
+    if (!IsFullQ(isLoadStore?preALU1:preALU2) && !isRAWHazard(currentInstruction) 
+            && !isWARHazard(currentInstruction) && !isWAWHazard(currentInstruction)){
+        // Check with non-issued instructions
+        bool confilctsWithNonIssue = false;
+        deque<Instruction>::iterator earlierInstructionIterator = preIssueBuffer.begin();
+        vector<int > readOperands1 = currentInstruction.GetReadOperands();
+        int writeOperands1 = currentInstruction.GetWriteOperands();
+
+        while (!confilctsWithNonIssue && earlierInstructionIterator != preIssueIterator){
+            int writeOperands2 = (*earlierInstructionIterator).GetWriteOperands();
+            // WAW hazard check
+            if ((writeOperands2 == writeOperands1) && writeOperands1 != -1){
+                confilctsWithNonIssue = true;
+                cout<<"Has WAW hazard"<<endl;
+            }
+            // RAW hazard check
+            for(int i =0; i< readOperands1.size(); i++){
+                if ((readOperands1[i] == writeOperands2) && writeOperands2 != -1){
+                    confilctsWithNonIssue = true;
+                    cout<<"Has RAW hazard"<<endl;
+                }
+            }
+            // WAR hazard check
+            vector<int >readOperands2 = (*earlierInstructionIterator).GetReadOperands();
+            for (int i =0; i < readOperands2.size(); i++){
+                if ((readOperands2[i]== writeOperands1) && writeOperands1 != -1){
+                    confilctsWithNonIssue = true;
+                    cout<<"Has WAR hazard"<<endl;
+                }
+            }
+            readOperands2.clear();
+
+            ++earlierInstructionIterator;
+        }
+        readOperands1.clear();
+        // Instruction issued, no non-issue conficts
+        if (!confilctsWithNonIssue){
+            if (isLoadStore){
+                if (loadStoreIssued == 0){
+                    switch (currentInstruction.opcode){
+                        case SW:
+                            // Check stores issued in order
+                            if (currentInstruction.stringFormat.compare(firstStore->stringFormat) == 0){
+                                DoIssueInstruction(currentInstruction);
+                                preIssueIterator = preIssueBuffer.erase(preIssueIterator);
+                                loadStoreIssued++;
+                            }
+                            break;
+                        case LW:
+                            if (firstStore== NULL){
+                                DoIssueInstruction(currentInstruction);
+                                preIssueIterator = preIssueBuffer.erase(preIssueIterator);
+                                loadStoreIssued++;
+                            }
+                    }
+                }
+            }
+            else{ 
+                if (nonLoadStoreIssued == 0){
+                    DoIssueInstruction(currentInstruction);
+                    preIssueIterator = preIssueBuffer.erase(preIssueIterator);
+                    nonLoadStoreIssued += 1;
+                }
+            }
+        }
+        else ++preIssueIterator; // InstructionNotIssued
+
+    }
+    else ++preIssueIterator;
+}
+
+
 int main(int argc, char** argv){
     // Setup our translator
     InitializeOpcodeMap();
@@ -527,6 +925,7 @@ int main(int argc, char** argv){
     ifstream inputFile(argv[1]);
     string currentLine;
     // Open and read file by each line
+    int instructionAddress = 256;
     if (inputFile.is_open()){
         bool isEndInstruction = false;
         do{
@@ -534,11 +933,20 @@ int main(int argc, char** argv){
             if (currentLine.length() < 32){
                 break;
             }
-            disassembler.ParseInstruction(currentLine, isEndInstruction);
+            currentLine = currentLine.substr(0,32);
+            disassembler.ParseInstruction(currentLine, isEndInstruction, instructionAddress);
+            instructionAddress +=4;
         } while (true);
     }
     inputFile.close();
     disassembler.disassembly.close();
+    ScoreBoardExecution();
+    return 0;
+}
+
+
+void LinearExecution(){
+
     int temp = disassembler.PC;
     disassembler.PC = 256;
     disassembler.memend = temp;
@@ -553,6 +961,8 @@ int main(int argc, char** argv){
         Instruction current = disassembler.instructionSet[(disassembler.PC - 256)/4];
         disassembler.simulation<<"--------------------"<<endl;
         disassembler.simulation<<"Cycle:"<<i++<<"\t"<<disassembler.PC<<"\t"<<current.stringFormat<<endl;
+        cout<<"Cycle:"<<i<<"\t"<<disassembler.PC<<"\t"<<current.stringFormat<<endl;
+        getchar();
         switch(current.opcode){
             case J:
                 disassembler.DoJInstruction(current);
@@ -635,6 +1045,106 @@ int main(int argc, char** argv){
         PrintData();
         //disassembler.simulation<<endl;
     }
-    return 0;
+}
+
+bool isRAWHazard(Instruction currentInstruction){
+    switch(currentInstruction.opcode){
+        case AND:
+        case ADD:
+        case SUB:
+        case MUL:
+        case OR:
+        case XOR:
+        case SLT:
+        case SLL:
+        case SRA:
+        case SRL:
+            if ( regWriteMap[currentInstruction.rs] == 0 || regWriteMap[currentInstruction.rt] == 0 ){
+                return false;
+            }
+            return true;
+            break;
+        case ADDI:
+        case ANDI:
+        case ORI:
+        case XORI:
+        case JR:
+        case LW:
+        case SW:
+            if ( regWriteMap[currentInstruction.rs] == 0){
+                return false;
+            }
+            return true; 
+            break;
+        default:
+            cout<<"Incorrect case for RAW hazard check!"<<endl;
+            break;
+    }
+}
+bool isWAWHazard(Instruction currentInstruction){
+    switch(currentInstruction.opcode){
+        case AND:
+        case ADD:
+        case SUB:
+        case MUL:
+        case OR:
+        case XOR:
+        case SLT:
+        case SLL:
+        case SRA:
+        case SRL:
+            if ( regWriteMap[currentInstruction.rd] == 0){
+                return false;
+            }
+            return true;
+            break;
+        case ADDI:
+        case ANDI:
+        case ORI:
+        case XORI:
+        case LW:
+            if ( regWriteMap[currentInstruction.rt] == 0){
+                return false;
+            }
+            return true; 
+            break;
+        default:
+            cout<<"Incorrect case for WAW hazard check!"<<endl;
+            break;
+    }
+
+}
+bool isWARHazard(Instruction currentInstruction){
+    switch(currentInstruction.opcode){
+        case AND:
+        case ADD:
+        case SUB:
+        case MUL:
+        case OR:
+        case XOR:
+        case SLT:
+        case SLL:
+        case SRA:
+        case SRL:
+            if ( regReadMap[currentInstruction.rd] == 0){
+                return false;
+            }
+            return true;
+            break;
+        case ADDI:
+        case ANDI:
+        case ORI:
+        case XORI:
+        case LW:
+            if ( regReadMap[currentInstruction.rt] == 0){
+                return false;
+            }
+            return true; 
+            break;
+        default:
+            cout<<"Incorrect case for WAR hazard check!"<<endl;
+            break;
+    }
+
 }
 
